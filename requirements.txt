@@ -1,0 +1,2 @@
+discord.py-self==2.6.2
+twilio==9.3.7
