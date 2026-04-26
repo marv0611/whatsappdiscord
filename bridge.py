@@ -1,36 +1,29 @@
 """
-Discord -> WhatsApp signal bridge.
+Discord -> Telegram signal bridge.
 
 Listens to one or more Discord channels via the gateway (user token)
-and forwards every new message to WhatsApp via Twilio.
+and forwards every new message to Telegram via a bot.
 
 ToS note: this uses a user token (self-bot), which violates Discord ToS.
 Jitter + rate limiting reduce detection risk but do not eliminate it.
 Use a secondary Discord account if you can.
 """
-
 import asyncio
 import logging
 import os
 import random
 import sys
-from datetime import datetime
 
 import discord  # discord.py-self, NOT discord.py
-from twilio.rest import Client as TwilioClient
+import requests
 
 # ---------- Config (via env vars on Railway) ----------
 DISCORD_USER_TOKEN = os.environ["DISCORD_USER_TOKEN"]
 CHANNEL_IDS = {int(x.strip()) for x in os.environ["CHANNEL_IDS"].split(",") if x.strip()}
-
-TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
-TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
-TWILIO_WHATSAPP_FROM = os.environ["TWILIO_WHATSAPP_FROM"]
-WHATSAPP_TO = os.environ["WHATSAPP_TO"]
-
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 PREFIX_CHANNEL_NAME = os.environ.get("PREFIX_CHANNEL_NAME", "true").lower() == "true"
-
-MAX_MSG_LEN = 1500
+MAX_MSG_LEN = 4000  # Telegram limit is 4096
 
 # ---------- Logging ----------
 logging.basicConfig(
@@ -39,25 +32,30 @@ logging.basicConfig(
 )
 log = logging.getLogger("bridge")
 
-# ---------- Twilio ----------
-twilio = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+# ---------- Telegram ----------
+TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-
-def send_whatsapp(body: str) -> None:
+def send_telegram(body: str) -> None:
     if not body.strip():
         return
     if len(body) > MAX_MSG_LEN:
         body = body[: MAX_MSG_LEN - 3] + "..."
     try:
-        msg = twilio.messages.create(
-            body=body,
-            from_=TWILIO_WHATSAPP_FROM,
-            to=WHATSAPP_TO,
+        r = requests.post(
+            TELEGRAM_URL,
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": body,
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
         )
-        log.info(f"Twilio sent: sid={msg.sid}")
+        if r.ok:
+            log.info(f"Telegram sent: message_id={r.json().get('result', {}).get('message_id')}")
+        else:
+            log.error(f"Telegram send failed: {r.status_code} {r.text}")
     except Exception as e:
-        log.error(f"Twilio send failed: {e}")
-
+        log.error(f"Telegram send failed: {e}")
 
 # ---------- Discord ----------
 class Bridge(discord.Client):
@@ -97,14 +95,11 @@ class Bridge(discord.Client):
             return
 
         log.info(f"Forwarding message from #{channel_name} ({len(body)} chars)")
-
         await asyncio.sleep(random.uniform(0.3, 1.2))
-        await asyncio.to_thread(send_whatsapp, body)
-
+        await asyncio.to_thread(send_telegram, body)
 
 def main():
     client = Bridge()
-
     while True:
         try:
             client.run(DISCORD_USER_TOKEN, log_handler=None)
@@ -116,7 +111,6 @@ def main():
             log.error(f"Client crashed: {e!r}. Reconnecting in {wait:.0f}s")
             import time
             time.sleep(wait)
-
 
 if __name__ == "__main__":
     main()
