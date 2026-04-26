@@ -1,2 +1,2 @@
-discord.py-self==2.1.0
-twilio>=9.3.0
+discord.py-self
+requests
